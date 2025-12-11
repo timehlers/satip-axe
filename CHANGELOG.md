@@ -2,6 +2,12 @@
 
 This change log will be updated whenever a new official release is made
 
+## Build 27-rc3
+
+Changes since 27-rc2:
+
+* Bump `oscam` to `a93e1a0c` (r11906)
+
 ## Build 27-rc2
 
 Changes since 27-rc1:
