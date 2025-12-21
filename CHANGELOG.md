@@ -2,22 +2,12 @@
 
 This change log will be updated whenever a new official release is made
 
-## Build 27-rc3
-
-Changes since 27-rc2:
-
-* Bump `oscam` to `a93e1a0c` (r11906)
-
-## Build 27-rc2
-
-Changes since 27-rc1:
-
-* Add software watchdog daemon, should make the device reboot itself automatically if it locks up
-
-## Build 27-rc1
+## Build 27 (Dec 21 2025)
 
 * Bump `minisatip` to v1.3.57, the latest 1.3.x version which is the last 
   version that will support AXE devices
+* Bump `oscam` to `a93e1a0c` (r11906)
+* Add software watchdog daemon, should make the device reboot itself automatically if it locks up
 * Removed telnet and FTP support for improved security
 * Change the HTTP server to read files from `/mnt/data/html`, making it possible 
   to permanently host files without running a script at boot (which is no longer supported)
