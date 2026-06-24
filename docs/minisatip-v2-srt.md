@@ -38,6 +38,7 @@ the container:
 
 ```sh
 make docker-minisatip-clean
+make docker-minisatip-check
 ```
 
 If `STM_DIR` does not exist yet, the build extracts `/opt/STM` from the legacy
@@ -51,6 +52,7 @@ To reuse an already extracted toolchain, override `STM_DIR`:
 
 ```sh
 make docker-minisatip-clean STM_DIR=/path/to/stlinux-opt/STM
+make docker-minisatip-check STM_DIR=/path/to/stlinux-opt/STM
 ```
 
 This builds only SRT and minisatip. The full firmware release build still uses
