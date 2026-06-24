@@ -6,6 +6,7 @@ STLINUX=/opt/STM/STLinux-2.4
 TOOLPATH=$(STLINUX)/host/bin
 TOOLCHAIN=$(STLINUX)/devkit/sh4
 HOST_ARCH=$(shell uname -m)
+CMAKE ?= cmake
 
 EXTRA_AXE_MODULES_DIR=firmware/initramfs/root/modules_idl4k_7108_ST40HOST_LINUX_32BITS
 EXTRA_AXE_MODULES=axe_dmx.ko axe_dmxts.ko axe_fp.ko axe_i2c.ko \
@@ -33,7 +34,16 @@ LIBDVBCSA_COMMIT=bc6c0b164a87ce05e9925785cc6fb3f54c02b026 # latest at the time
 LIBDVBCSA=libdvbcsa-master
 LIBDVBCSA_LIB_FILES=libdvbcsa.so libdvbcsa.so.1 libdvbcsa.so.1.0.1
 
-MINISATIP_COMMIT=v1.3.57 # final version that supports axe
+SRT_COMMIT=v1.4.4
+SRT=srt
+SRT_BUILD=srt-build
+SRT_INSTALL=srt-install
+SRT_PATCH=patches/srt-1.4.4-sh4.patch
+SRT_LIB_FILES=libsrt.so.1.4 libsrt.so.1.4.4
+LIBATOMIC_LIB_FILES=libatomic.so.1 libatomic.so.1.0.0
+
+MINISATIP_COMMIT=e77a30cc8e43ad8d67a4680663f079801cf19199 # v2.0.87-ish
+MINISATIP_PATCH=patches/minisatip-v2-axe-sh4.patch
 
 BUSYBOX=busybox-1.26.2
 
@@ -142,8 +152,9 @@ fs.cpio: $(CPIO_SRCS)
 	  $(foreach f,$(DROPBEAR_BIN_FILES), -e "apps/$(DROPBEAR)/$(f):usr/bin/$(f)") \
 	  -e "apps/$(OPENSSH)/sftp-server:usr/libexec/sftp-server" \
 	  -e "apps/$(ETHTOOL)/ethtool:sbin/ethtool" \
-	  $(foreach f,$(LIBDVBCSA_LIB_FILES), -e "apps/$(LIBDVBCSA)/src/.libs/$(f):lib/$(f)") \
 	  -e "apps/minisatip/minisatip:sbin/minisatip" \
+	  $(foreach f,$(SRT_LIB_FILES), -e "apps/$(SRT_INSTALL)/lib/$(f):lib/$(f)") \
+	  $(foreach f,$(LIBATOMIC_LIB_FILES), -e "$(TOOLCHAIN)/target/usr/lib/$(f):lib/$(f)") \
 	  $(foreach f,$(notdir $(wildcard apps/minisatip/html/*)), -e "apps/minisatip/html/$f:usr/share/minisatip/html/$f") \
 	  -e "apps/$(NANO)/src/nano:usr/bin/nano" \
 	  -e "apps/mtd-utils/nandwrite:usr/sbin/nandwrite2" \
@@ -279,27 +290,59 @@ media-clean:
 # minisatip
 #
 
-apps/minisatip/minisatip: apps/$(LIBDVBCSA)/src/.libs/libdvbcsa.a
-	rm -rf apps/minisatip
+apps/sh4-toolchain.cmake:
+	@mkdir -p apps
+	@printf '%s\n' \
+	  'set(CMAKE_SYSTEM_NAME Linux)' \
+	  'set(CMAKE_SYSTEM_PROCESSOR sh4)' \
+	  'set(TOOLCHAIN $(TOOLCHAIN))' \
+	  'set(CMAKE_C_COMPILER $${TOOLCHAIN}/bin/sh4-linux-gcc)' \
+	  'set(CMAKE_CXX_COMPILER $${TOOLCHAIN}/bin/sh4-linux-c++)' \
+	  'set(CMAKE_FIND_ROOT_PATH $${TOOLCHAIN}/target)' \
+	  'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' \
+	  'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' \
+	  'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' \
+	  'set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)' \
+	  > $@
+
+apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4: apps/sh4-toolchain.cmake
+	rm -rf apps/$(SRT) apps/$(SRT_BUILD) apps/$(SRT_INSTALL)
+	$(call GIT_CLONE,https://github.com/Haivision/srt.git,$(SRT),$(SRT_COMMIT))
+	cd apps/$(SRT) && git apply ../../$(SRT_PATCH)
+	$(CMAKE) -S apps/$(SRT) -B apps/$(SRT_BUILD) \
+	  -DCMAKE_TOOLCHAIN_FILE=$(CURDIR)/apps/sh4-toolchain.cmake \
+	  -DCMAKE_BUILD_TYPE=Release \
+	  -DCMAKE_INSTALL_PREFIX=$(CURDIR)/apps/$(SRT_INSTALL) \
+	  -DENABLE_ENCRYPTION=OFF \
+	  -DENABLE_APPS=OFF \
+	  -DENABLE_TESTING=OFF
+	$(CMAKE) --build apps/$(SRT_BUILD) -j $(CPUS)
+	$(CMAKE) --install apps/$(SRT_BUILD)
+
+apps/minisatip/minisatip: apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4
+	rm -rf apps/minisatip apps/minisatip-build
 	$(call GIT_CLONE,https://github.com/catalinii/minisatip.git,minisatip,$(MINISATIP_COMMIT))
-	cd apps/minisatip && ./configure \
-		CFLAGS="-I$(CURDIR)/apps/$(LIBDVBCSA)/src" \
-		LDFLAGS="-L$(CURDIR)/apps/$(LIBDVBCSA)/src/.libs" \
-		--enable-axe \
-		--enable-dvbapi \
-		--enable-dvbcsa \
-		--disable-dvbca \
-		--disable-netcv
-	make -C apps/minisatip -j $(CPUS) \
-		CC=$(TOOLCHAIN)/bin/sh4-linux-gcc \
-	  EXTRA_CFLAGS="-O2 -I$(CURDIR)/kernel/include -I$(CURDIR)/apps/$(LIBDVBCSA)/src"
+	cd apps/minisatip && git apply ../../$(MINISATIP_PATCH)
+	$(CMAKE) -S apps/minisatip -B apps/minisatip-build \
+	  -DCMAKE_TOOLCHAIN_FILE=$(CURDIR)/apps/sh4-toolchain.cmake \
+	  -DAXE=ON \
+	  -DSRT=ON \
+	  -DCXX23=OFF \
+	  -DDVBCSA=OFF \
+	  -DDVBCA=OFF \
+	  -DNETCVCLIENT=OFF \
+	  -DBUILD_TESTING=OFF \
+	  -DSRT_LIBRARY=$(CURDIR)/apps/$(SRT_INSTALL)/lib/libsrt.so \
+	  -DSRT_INCLUDE_DIR=$(CURDIR)/apps/$(SRT_INSTALL)/include
+	$(CMAKE) --build apps/minisatip-build -j $(CPUS)
+	cp apps/minisatip-build/minisatip apps/minisatip/minisatip
 
 .PHONY: minisatip
 minisatip: apps/minisatip/minisatip
 
 .PHONY: minisatip-clean
 minisatip-clean:
-	rm -rf apps/minisatip
+	rm -rf apps/minisatip apps/minisatip-build apps/$(SRT) apps/$(SRT_BUILD) apps/$(SRT_INSTALL) apps/sh4-toolchain.cmake
 
 #
 # iperf
