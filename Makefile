@@ -132,7 +132,7 @@ docker-minisatip-check: $(STM_DIR)/STLinux-2.4
 	  -v $(shell pwd):/build \
 	  -v "$(STM_DIR)":/opt/STM:ro \
 	  satip-axe-minisatip -c \
-	    'file apps/minisatip/minisatip && \
+	    '/opt/STM/STLinux-2.4/devkit/sh4/bin/sh4-linux-readelf -h apps/minisatip/minisatip | grep -E "Class|Machine" && \
 	     /opt/STM/STLinux-2.4/devkit/sh4/bin/sh4-linux-readelf -d apps/minisatip/minisatip | grep NEEDED && \
 	     ls -lh apps/minisatip/minisatip apps/srt-install/lib/libsrt.so*'
 
