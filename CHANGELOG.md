@@ -2,7 +2,7 @@
 
 This change log will be updated whenever a new official release is made
 
-## Unreleased
+## Build 28 (Jun 24 2026)
 
 * Build `minisatip` from the v2 codebase with an AXE compatibility patch
 * Add SRT support through SH4-built SRT 1.4.4

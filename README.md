@@ -1,12 +1,12 @@
 # satip-axe
 
-![Build firmware](https://github.com/Jalle19/satip-axe/workflows/Build%20firmware/badge.svg)
+![Build firmware](https://github.com/timehlers/satip-axe/workflows/Build%20firmware/badge.svg)
 
 A maintained fork of [perexg/satip-axe](https://github.com/perexg/satip-axe), a firmware with minisatip for Inverto IDL-400s/Grundig GSS.BOX/Telestar Digibit R1
 
 ## Releases
 
-Releases can be found [here](https://github.com/Jalle19/satip-axe/releases).
+Releases can be found [here](https://github.com/timehlers/satip-axe/releases).
 
 ## Improvements in this fork
 
