@@ -10,6 +10,7 @@ CMAKE ?= $(or $(shell command -v cmake3 2>/dev/null),$(shell command -v cmake 2>
 STM_DIR ?= $(CURDIR)/stlinux-opt/STM
 STLINUX_IMAGE ?= jalle19/centos7-stlinux24:latest
 STLINUX_COPY_CONTAINER ?= satip-axe-stlinux-copy
+DOCKER_NETWORK ?= host
 
 EXTRA_AXE_MODULES_DIR=firmware/initramfs/root/modules_idl4k_7108_ST40HOST_LINUX_32BITS
 EXTRA_AXE_MODULES=axe_dmx.ko axe_dmxts.ko axe_fp.ko axe_i2c.ko \
@@ -105,6 +106,7 @@ docker-clean-release:
 docker-minisatip: $(STM_DIR)/STLinux-2.4
 	docker build -f Dockerfile.minisatip -t satip-axe-minisatip .
 	docker run --rm \
+	  --network $(DOCKER_NETWORK) \
 	  -v $(shell pwd):/build \
 	  -v "$(STM_DIR)":/opt/STM:ro \
 	  --user $(shell id -u):$(shell id -g) \
@@ -114,6 +116,7 @@ docker-minisatip: $(STM_DIR)/STLinux-2.4
 docker-minisatip-clean: $(STM_DIR)/STLinux-2.4
 	docker build -f Dockerfile.minisatip -t satip-axe-minisatip .
 	docker run --rm \
+	  --network $(DOCKER_NETWORK) \
 	  -v $(shell pwd):/build \
 	  -v "$(STM_DIR)":/opt/STM:ro \
 	  --user $(shell id -u):$(shell id -g) \
@@ -124,6 +127,7 @@ docker-minisatip-check: $(STM_DIR)/STLinux-2.4
 	test -x apps/minisatip/minisatip
 	docker build -f Dockerfile.minisatip -t satip-axe-minisatip .
 	docker run --rm \
+	  --network $(DOCKER_NETWORK) \
 	  -v $(shell pwd):/build \
 	  -v "$(STM_DIR)":/opt/STM:ro \
 	  satip-axe-minisatip sh -c \

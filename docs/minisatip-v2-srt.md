@@ -58,6 +58,19 @@ make docker-minisatip-check STM_DIR=/path/to/stlinux-opt/STM
 This builds only SRT and minisatip. The full firmware release build still uses
 the legacy STLinux/CentOS release environment.
 
+The minisatip container defaults to Docker host networking because GitHub TLS
+connections may stall on some Docker bridge setups:
+
+```sh
+make docker-minisatip-clean DOCKER_NETWORK=host
+```
+
+To use Docker's default bridge network instead:
+
+```sh
+make docker-minisatip-clean DOCKER_NETWORK=bridge
+```
+
 The `minisatip` make target now performs these steps:
 
 1. generate an SH4 CMake toolchain file in `apps/sh4-toolchain.cmake`
