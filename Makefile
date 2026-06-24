@@ -348,7 +348,8 @@ apps/sh4-toolchain.cmake:
 
 apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4: apps/sh4-toolchain.cmake $(SRT_PATCH)
 	rm -rf apps/$(SRT) apps/$(SRT_BUILD) apps/$(SRT_INSTALL)
-	$(call GIT_CLONE,https://github.com/Haivision/srt.git,$(SRT),$(SRT_COMMIT))
+	@mkdir -p apps
+	git clone --depth 1 --branch $(SRT_COMMIT) https://github.com/Haivision/srt.git apps/$(SRT)
 	cd apps/$(SRT) && git apply ../../$(SRT_PATCH)
 	$(CMAKE) -S apps/$(SRT) -B apps/$(SRT_BUILD) \
 	  -DCMAKE_TOOLCHAIN_FILE=$(CURDIR)/apps/sh4-toolchain.cmake \
@@ -362,7 +363,11 @@ apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4: apps/sh4-toolchain.cmake $(SRT_PATCH)
 
 apps/minisatip/minisatip: apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4 $(MINISATIP_PATCH)
 	rm -rf apps/minisatip apps/minisatip-build
-	$(call GIT_CLONE,https://github.com/catalinii/minisatip.git,minisatip,$(MINISATIP_COMMIT))
+	@mkdir -p apps/minisatip
+	cd apps/minisatip && git init
+	cd apps/minisatip && git remote add origin https://github.com/catalinii/minisatip.git
+	cd apps/minisatip && git fetch --depth 1 origin $(MINISATIP_COMMIT)
+	cd apps/minisatip && git checkout -b axe FETCH_HEAD
 	cd apps/minisatip && git apply ../../$(MINISATIP_PATCH)
 	$(CMAKE) -S apps/minisatip -B apps/minisatip-build \
 	  -DCMAKE_TOOLCHAIN_FILE=$(CURDIR)/apps/sh4-toolchain.cmake \
