@@ -1,0 +1,1894 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c96b326..845ab8e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -75,6 +75,7 @@ option(DVBCSA "Enable DVB-CSA support" ${DVBCSA_DEFAULT})
+ option(DVBCA "Enable DVB-CA support" ${DVBCA_DEFAULT})
+ option(NETCVCLIENT "Enable NetCeiver client support" ${NETCVCLIENT_DEFAULT})
+ option(LINUXDVB "Enable Linux DVB support" ON)
++option(AXE "Enable satip-axe platform support" OFF)
+ option(CXX23 "Enable C++23 features (stacktrace)" ${CXX23_DEFAULT})
+ option(STATIC "Build with static linking" OFF)
+ option(DEBUG "Enable debug/sanitizer build" OFF)
+@@ -94,14 +95,18 @@ if(DVBCA AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+     set(DDCI ON)
+ endif()
+ 
+-set(CMAKE_CXX_STANDARD 23)
++if(CXX23)
++    set(CMAKE_CXX_STANDARD 23)
++else()
++    set(CMAKE_CXX_STANDARD 11)
++endif()
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ 
+ # Export compile commands for IDE support
+ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+ 
+ # Generate config.h
+-set(OPTIONS DVBCSA DVBCA NETCVCLIENT LINUXDVB DDCI CXX23 SRT)
++set(OPTIONS DVBCSA DVBCA NETCVCLIENT LINUXDVB DDCI CXX23 SRT AXE)
+ set(CONFIG_CONTENT "// Auto-generated configuration header\n#ifndef CONFIG_H\n#define CONFIG_H\n\n")
+ 
+ foreach(OPT ${OPTIONS})
+@@ -205,18 +210,26 @@ if(DDCI)
+ endif()
+ if(SRT)
+     list(APPEND MINISATIP_SOURCES src/srt.cpp)
+-    list(APPEND MINISATIP_LIBS srt)
++    list(APPEND MINISATIP_LIBS ${SRT_LIBRARY})
++endif()
++if(AXE)
++    list(APPEND MINISATIP_SOURCES src/axe.cpp)
+ endif()
+ if(NOT APPLE)
+     list(APPEND MINISATIP_LIBS rt)
+ endif()
+ 
+-# Main library
+-add_library(minisatip_lib OBJECT ${MINISATIP_SOURCES})
+-target_include_directories(minisatip_lib PUBLIC
++set(MINISATIP_INCLUDE_DIRS
+     ${CMAKE_SOURCE_DIR}/src
+     ${CMAKE_BINARY_DIR}
+ )
++if(NOT CXX23)
++    list(PREPEND MINISATIP_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/src/compat)
++endif()
++
++# Main library
++add_library(minisatip_lib OBJECT ${MINISATIP_SOURCES})
++target_include_directories(minisatip_lib PUBLIC ${MINISATIP_INCLUDE_DIRS})
+ target_compile_options(minisatip_lib PRIVATE -include ${CMAKE_BINARY_DIR}/config.h)
+ if(SRT)
+     target_include_directories(minisatip_lib PUBLIC ${SRT_INCLUDE_DIR})
+@@ -227,10 +240,7 @@ endif()
+ 
+ # Main executable
+ add_executable(minisatip $<TARGET_OBJECTS:minisatip_lib>)
+-target_include_directories(minisatip PRIVATE
+-    ${CMAKE_SOURCE_DIR}/src
+-    ${CMAKE_BINARY_DIR}
+-)
++target_include_directories(minisatip PRIVATE ${MINISATIP_INCLUDE_DIRS})
+ set_target_properties(minisatip PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+ 
+ if(STATIC)
+diff --git a/src/adapter.cpp b/src/adapter.cpp
+index 6223c4a..e3a7b64 100644
+--- a/src/adapter.cpp
++++ b/src/adapter.cpp
+@@ -52,6 +52,9 @@
+ #ifndef DISABLE_DDCI
+ #include "ddci.h"
+ #endif
++#ifndef DISABLE_AXE
++#include "axe.h"
++#endif
+ 
+ #define DEFAULT_LOG LOG_ADAPTER
+ 
+@@ -67,6 +70,9 @@ SMutex a_mutex;
+ int tuner_s2, tuner_t, tuner_c, tuner_t2, tuner_c2, tuner_at, tuner_ac;
+ int16_t fe_map[2 * MAX_ADAPTERS];
+ void find_dvb_adapter(adapter **a);
++#ifndef DISABLE_AXE
++void find_axe_adapter(adapter **a);
++#endif
+ 
+ adapter *adapter_alloc() {
+     adapter *ad = new adapter();
+@@ -126,8 +132,12 @@ void find_adapters() {
+     init_find_adapter = 1;
+     a_count = 0;
+ #ifndef DISABLE_LINUXDVB
++#ifndef DISABLE_AXE
++    find_axe_adapter(a);
++#else
+     find_dvb_adapter(a);
+ #endif
++#endif
+ #ifndef DISABLE_SATIPCLIENT
+     find_satip_adapter(a);
+ #endif
+@@ -1226,7 +1236,7 @@ int sync_pids(int sid, int aid, transponder *tp) {
+     for (int i = 0; i < MAX_PIDS; i++) {
+         if (ad->pids[i].flags > PID_STATE_INACTIVE) {
+             if (ad->pids[i].has_stream(sid)) {
+-                if (!tp->pids.contains(ad->pids[i].pid)) {
++                if (tp->pids.count(ad->pids[i].pid) == 0) {
+                     mark_pid_deleted(aid, sid, ad->pids[i].pid, &ad->pids[i]);
+                 }
+             }
+@@ -1418,7 +1428,7 @@ char *describe_adapter(int sid, int aid, char *dad, int ld) {
+     }
+ 
+     if (!use_ad) {
+-        if (t->pids.contains(8192))
++        if (t->pids.count(8192) > 0)
+             strlcatf(dad, ld, len, "%s", "all");
+         else if (!t->pids.empty()) {
+             std::string pids_str = iterable_to_string(t->pids);
+diff --git a/src/adapter.h b/src/adapter.h
+index fbbb801..af112a6 100644
+--- a/src/adapter.h
++++ b/src/adapter.h
+@@ -111,6 +111,13 @@ struct struct_adapter {
+     int old_diseqc;
+     int old_hiband;
+     int old_pol;
++#ifndef DISABLE_AXE
++    int fe2 = -1;
++    int64_t axe_vdevice_last_sync;
++    int64_t axe_pktc;
++    int64_t axe_ccerr;
++    int axe_used;
++#endif
+     int id;
+     int rlen, lbuf; // how many bytes are received in the TS buffer, length of
+                     // the buffer
+diff --git a/src/api/symbols.cpp b/src/api/symbols.cpp
+index 36fcc0e..53c35a1 100644
+--- a/src/api/symbols.cpp
++++ b/src/api/symbols.cpp
+@@ -37,5 +37,8 @@ _symbols *sym[] = {adapters_sym, stream_sym, minisatip_sym,
+ #ifndef DISABLE_PMT
+                    pmt_sym,
+ #endif
++#ifndef DISABLE_AXE
++                   axe_sym,
++#endif
+ 
+                    NULL};
+diff --git a/src/api/symbols.h b/src/api/symbols.h
+index 01a48b7..e591c78 100644
+--- a/src/api/symbols.h
++++ b/src/api/symbols.h
+@@ -27,6 +27,9 @@ extern _symbols satipc_sym[];
+ #ifndef DISABLE_PMT
+ extern _symbols pmt_sym[];
+ #endif
++#ifndef DISABLE_AXE
++extern _symbols axe_sym[];
++#endif
+ 
+ // Declare all symbols
+ extern _symbols *sym[];
+diff --git a/src/axe.cpp b/src/axe.cpp
+new file mode 100644
+index 0000000..8912498
+--- /dev/null
++++ b/src/axe.cpp
+@@ -0,0 +1,987 @@
++/*
++ * Copyright (C) 2014-2020 Jaroslav Kysela
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
++ * USA
++ *
++ */
++
++#include "adapter.h"
++#include "api/symbols.h"
++#include "api/variables.h"
++#include "dvb.h"
++#include "minisatip.h"
++#include "socketworks.h"
++#include "utils.h"
++#include "utils/ticks.h"
++
++#include <arpa/inet.h>
++#include <ctype.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <math.h>
++#include <net/if.h>
++#include <netdb.h>
++#include <netinet/in.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/socket.h>
++#include <sys/types.h>
++#include <time.h>
++#include <unistd.h>
++
++#include "axe.h"
++
++#define DEFAULT_LOG LOG_AXE
++
++#ifndef DISABLE_LINUXDVB
++
++// satip-axe support DVB-S2X: https://github.com/perexg/satip-axe/issues/126
++#ifndef DTV_SCRAMBLING_SEQUENCE_INDEX
++#define DTV_SCRAMBLING_SEQUENCE_INDEX 70
++#endif
++#ifndef DTV_STREAM_ID
++#define DTV_STREAM_ID 42
++#endif
++
++int get_signal_new(adapter *ad, int *status, uint32_t *ber, uint16_t *strength,
++                   uint16_t *snr, uint16_t *db);
++int send_jess(adapter *ad, int fd, int freq, int pos, int pol, int hiband,
++              diseqc *d);
++int send_unicable(adapter *ad, int fd, int freq, int pos, int pol, int hiband,
++                  diseqc *d);
++int send_diseqc(adapter *ad, int fd, int pos, int pos_change, int pol,
++                int hiband, diseqc *d);
++
++static std::string axe_name(int aid, int fd) { return "AXE DVB-S/S2"; }
++
++static adapter *get_axe_configured_adapter(int aid) {
++    if (aid < 0 || aid >= MAX_ADAPTERS || !a[aid] || is_adapter_disabled(aid))
++        return NULL;
++    return a[aid];
++}
++
++int axe_fp_fd = -1;
++
++static inline void axe_fp_fd_open(void) {
++    if (axe_fp_fd < 0)
++        axe_fp_fd = open("/dev/axe/fp-0", O_WRONLY);
++}
++
++static inline void axe_fp_fd_write(const char *s) {
++    const char *b;
++    size_t len;
++    ssize_t r;
++
++    axe_fp_fd_open();
++    if (axe_fp_fd < 0)
++        return;
++    len = strlen(b = s);
++    while (len > 0) {
++        r = write(axe_fp_fd, b, len);
++        if (r > 0) {
++            len -= r;
++            b += r;
++        }
++    }
++}
++
++void axe_set_tuner_led(int tuner, int on) {
++    static int state = 0;
++    char buf[16];
++    if (((state >> tuner) & 1) != !!on) {
++        sprintf(buf, "T%d_LED %d\n", tuner, on ? 1 : 0);
++        axe_fp_fd_write(buf);
++        if (on)
++            state |= 1 << tuner;
++        else
++            state &= ~(1 << tuner);
++    }
++}
++
++void axe_set_network_led(int on) {
++    static int state = -1;
++    if (state != on) {
++        axe_fp_fd_write(on ? "NET_LED 1\n" : "NET_LED 0\n");
++        state = on;
++    }
++}
++
++int axe_read(int socket, void *buf, int len, sockets *ss, int *rv) {
++    *rv = read(socket, buf, len);
++    //	if(*rv < 0 || *rv == 0 || errno == -EAGAIN)
++    if (*rv < 0 || *rv == 0 || errno == -EAGAIN) {
++        *rv = 0;
++        return 1;
++    }
++    return (*rv > 0);
++}
++
++int axe_open_device(adapter *ad) {
++    char buf[100];
++    LOG("trying to open [%d] adapter %d and frontend %d", ad->id, ad->pa,
++        ad->fn);
++    sprintf(buf, "/dev/axe/frontend-%d", ad->pa);
++    if (ad->fe2 > 0)
++        ad->fe = ad->fe2;
++    else
++        ad->fe = ad->fe2 = open(buf, O_RDWR | O_NONBLOCK);
++    sprintf(buf, "/dev/axe/demuxts-%d", ad->pa);
++    ad->dvr = open(buf, O_RDONLY | O_NONBLOCK);
++    if (ad->fe < 0 || ad->dvr < 0) {
++        sprintf(buf, "/dev/axe/frontend-%d", ad->pa);
++        LOG("Could not open %s in RW mode (fe: %d, dvr: %d)", buf, ad->fe,
++            ad->dvr);
++        if (ad->fe >= 0)
++            close(ad->fe);
++        if (ad->dvr >= 0)
++            close(ad->dvr);
++        ad->fe = ad->fe2 = ad->dvr = -1;
++        return 1;
++    }
++    ad->type = ADAPTER_DVB;
++    ad->dmx = -1;
++    LOG("opened DVB adapter %d fe:%d dvr:%d", ad->id, ad->fe, ad->dvr);
++    return 0;
++}
++
++int axe_post_init(adapter *ad) {
++    sockets_setread(ad->sock, (void *)axe_read);
++    return 0;
++}
++
++static void axe_stv0900_i2c_4(const char *name, int pa, int v) {
++    char buf[64];
++    const char *b;
++    int fd;
++    size_t len;
++    ssize_t r;
++
++    snprintf(buf, sizeof(buf),
++             "/sys/devices/platform/i2c-stm.0/i2c-0/stv0900_%s%d", name,
++             pa + 1);
++    fd = open(buf, O_WRONLY);
++    if (fd < 0)
++        return;
++    snprintf(buf, sizeof(buf), "%d", v);
++    len = strlen(b = buf);
++    while (len > 0) {
++        r = write(fd, b, len);
++        if (r > 0) {
++            len -= r;
++            b += r;
++        }
++    }
++    close(fd);
++}
++
++static void axe_pls_isi(adapter *ad, transponder *tp) {
++    static int isi[4] = {-2, -2, -2, -2};
++    static int pls_code[4] = {-2, -2, -2, -2};
++    int v;
++    int plp_isi = tp->plp_isi.value_or(-1);
++    int pls_code_value = tp->pls_code.value_or(-1);
++    int pls_mode_value = tp->pls_mode.has_value() ? tp->pls_mode.value() : -1;
++    LOGM("axe: isi %d pls %d mode %d", plp_isi, pls_code_value,
++         pls_mode_value);
++    if (plp_isi != isi[ad->pa]) {
++        v = plp_isi < 0 ? -1 : (plp_isi & 0xff);
++        axe_stv0900_i2c_4("mis", ad->pa, v);
++        isi[ad->pa] = plp_isi;
++    }
++    if (pls_code_value != pls_code[ad->pa]) {
++        v = pls_code_value < 0 ? 0 : (pls_code_value & 0x3ffff);
++        if (pls_mode_value == PLS_MODE_GOLD || pls_mode_value < 0)
++            v |= 0x40000;
++        else if (pls_mode_value == PLS_MODE_COMBO)
++            v |= 0x80000; /* really? */
++        axe_stv0900_i2c_4("pls", ad->pa, v);
++        pls_code[ad->pa] = pls_code_value;
++    }
++}
++
++int axe_wakeup(adapter *_ad, int fe_fd, int voltage) {
++    int i, mask;
++    adapter *ad;
++    if (opts.axe_power < 2)
++        return 0;
++    for (i = 0; i < 4; i++) {
++        ad = get_adapter(i);
++        if (ad == NULL || is_adapter_disabled(i))
++            continue;
++        if (ad->old_pol >= 0)
++            return 0;
++    }
++    LOG("AXE wakeup");
++    for (i = mask = 0; i < 4; i++) {
++        /* lowband enabled */
++        if (opts.quattro && opts.quattro_hiband == 1 && i < 2) {
++            mask = 3;
++            continue;
++        }
++        /* hiband enabled */
++        if (opts.quattro && opts.quattro_hiband == 2 && i >= 2) {
++            mask = 3 << 2;
++            continue;
++        }
++        mask |= 1 << i;
++    }
++    for (i = 0; i < 4 && mask; i++) {
++        if (((1 << i) & mask) == 0)
++            continue;
++        ad = get_adapter(i);
++        if (ad == NULL || is_adapter_disabled(i))
++            continue;
++        LOG("axe_wakeup: waking adapter %d, fd %d", i, ad->fe);
++        if (ioctl(ad->fe, FE_SET_VOLTAGE, voltage) == -1)
++            LOG("axe_wakeup: FE_SET_VOLTAGE failed fd %d: %s", ad->fe,
++                strerror(errno));
++    }
++    return 0;
++}
++
++static inline int extra_quattro(int input, int diseqc, int *equattro) {
++    if (diseqc <= 0)
++        *equattro = 0;
++    /* lowband allowed - control the hiband inputs independently for positions
++     * src=2+ */
++    else if (opts.quattro && opts.quattro_hiband == 1 && input < 2)
++        *equattro = diseqc;
++    /* hiband allowed - control the lowband inputs independently for positions
++     * src=2+ */
++    else if (opts.quattro && opts.quattro_hiband == 2 && input >= 2 &&
++             input < 4)
++        *equattro = diseqc;
++    else
++        *equattro = 0;
++    return *equattro;
++}
++
++adapter *axe_use_adapter(int input) {
++    int input2 = input < 4 ? input : -1;
++    adapter *ad = get_axe_configured_adapter(input2);
++    char buf[32];
++    if (ad) {
++        if (ad->fe2 <= 0) {
++            sprintf(buf, "/dev/axe/frontend-%d", input);
++            ad->fe2 = open(buf, O_RDONLY | O_NONBLOCK);
++            LOG("adapter %d force open, fe2: %d", input, ad->fe2);
++            if (ad->fe2 < 0)
++                ad = NULL;
++        }
++    }
++    return ad;
++}
++
++int axe_tune_check(adapter *ad, transponder *tp, diseqc *diseqc_param,
++                   int diseqc) {
++    int pol = (tp->pol.value_or(0) - 1) & 1;
++    int hiband = get_lnb_hiband(tp, diseqc_param);
++    LOGM(
++        "axe: tune check for adapter %d, pol %d/%d, hiband %d/%d, diseqc %d/%d",
++        ad->id, ad->old_pol, pol, ad->old_hiband, hiband, ad->old_diseqc,
++        diseqc);
++    if (ad->old_pol != pol)
++        return 0;
++    if (ad->old_hiband != hiband)
++        return 0;
++    if (ad->old_diseqc != diseqc)
++        return 0;
++    return 1;
++}
++
++int axe_setup_switch(adapter *ad) {
++    int frontend_fd = ad->fe;
++    transponder *tp = &ad->tp;
++    diseqc *diseqc_param = &tp->diseqc_param;
++
++    int hiband;
++    int freq;
++    int diseqc = (tp->diseqc.value_or(0) > 0) ? tp->diseqc.value_or(0) - 1 : 0;
++    int pol = (tp->pol.value_or(0) - 1) & 1;
++
++    adapter *ad2, *adm;
++    int input = 0, aid, pos = 0, equattro = 0, master = -1;
++
++    /* this is a new tune, so clear all adapter<->input mappings */
++    for (aid = 0; aid < 4; aid++) {
++        ad2 = a[aid];
++        ad2->axe_used &= ~(1 << ad->id);
++    }
++
++    if (diseqc_param->switch_type != SWITCH_UNICABLE &&
++        diseqc_param->switch_type != SWITCH_JESS) {
++        input = ad->id;
++        if (!opts.quattro || extra_quattro(input, diseqc, &equattro)) {
++            if (equattro > 0)
++                diseqc = equattro - 1;
++            if (absolute_switch && diseqc >= 0 && diseqc < MAX_SOURCES) {
++                /* reuse input */
++                for (aid = 0; aid < 4; aid++) {
++                    pos = get_absolute_source_for_adapter(
++                        aid, tp->diseqc.value_or(0), SYS_DVBS);
++                    if (pos <= 0)
++                        continue;
++                    pos--;
++                    ad2 = get_axe_configured_adapter(aid);
++                    if (!ad2)
++                        continue;
++                    if (ad2->fe2 <= 0)
++                        continue;
++                    if ((ad2->axe_used & ~(1 << ad->id)) == 0)
++                        continue;
++                    if (!axe_tune_check(ad2, tp, &ad2->diseqc_param, pos))
++                        continue;
++                    break;
++                }
++                /* find _free input */
++                if (aid >= 4) {
++                    for (aid = 0; aid < 4; aid++) {
++                        pos = get_absolute_source_for_adapter(
++                            aid, tp->diseqc.value_or(0), SYS_DVBS);
++                        if (pos <= 0)
++                            continue;
++                        pos--;
++                        ad2 = get_axe_configured_adapter(aid);
++                        if (!ad2)
++                            continue;
++                        LOGM("axe: checking %d used 0x%x in %d", ad->id,
++                             ad2->axe_used, ad2->id);
++                        if (ad2->axe_used & ~(1 << ad->id))
++                            continue;
++                        break;
++                    }
++                }
++                if (aid >= 4) {
++                    LOG("unable to find input for diseqc %d (absolute switch), "
++                        "adapter "
++                        "%d",
++                        diseqc, input);
++                    return 0;
++                }
++                diseqc = pos;
++                master = aid;
++                adm = axe_use_adapter(master);
++                if (adm == NULL) {
++                    LOG("axe_fe: unknown master adapter for input %d", input);
++                    return 0;
++                }
++            } else {
++                master = (ad->master_source >= 0) ? ad->master_source : ad->pa;
++                adm = axe_use_adapter(master);
++                if (adm == NULL) {
++                    LOG("axe_fe: unknown master adapter for input %d", input);
++                    return 0;
++                }
++                if (adm->old_pol >= 0) {
++                    for (aid = 0; aid < 4; aid++) {
++                        ad2 = get_axe_configured_adapter(aid);
++                        if (!ad2 || ad2->fe2 <= 0 || ad == ad2)
++                            continue;
++                        if ((ad2->master_source >= 0) &&
++                            ad2->master_source != adm->pa) // adm->id ?
++                            continue;
++                        if ((ad2->master_source >= 0) && ad2 != adm)
++                            continue;
++                        if (ad2->sid_cnt > 0)
++                            break;
++                    }
++                    if (adm != ad && aid < 4 &&
++                        !axe_tune_check(adm, tp, &adm->diseqc_param, diseqc)) {
++                        LOG("unable to use slave adapter %d (master %d)", input,
++                            adm->pa);
++                        return 0;
++                    }
++                }
++            }
++            adm->axe_used |= (1 << ad->id);
++            if (master >= 0) {
++                input = master;
++                diseqc_param = &adm->diseqc_param;
++                hiband = get_lnb_hiband(tp, diseqc_param);
++                freq = get_lnb_int_freq(tp, diseqc_param);
++                if (!axe_tune_check(adm, tp, diseqc_param, diseqc)) {
++                    send_diseqc(adm, adm->fe2, diseqc,
++                                adm->old_diseqc != diseqc, pol, hiband,
++                                diseqc_param);
++                    adm->old_pol = pol;
++                    adm->old_hiband = hiband;
++                    adm->old_diseqc = diseqc;
++                }
++                goto axe;
++            }
++        } else if (opts.quattro) {
++            hiband = get_lnb_hiband(tp, diseqc_param);
++            if (opts.quattro_hiband == 1 && hiband) {
++                LOG("axe_fe: hiband is not allowed for quattro config (adapter "
++                    "%d)",
++                    input);
++                return 0;
++            }
++            if (opts.quattro_hiband == 2 && !hiband) {
++                LOG("axe_fe: lowband is not allowed for quattro config "
++                    "(adapter %d)",
++                    input);
++                return 0;
++            }
++            input = ((hiband ^ 1) << 1) | (pol ^ 1);
++            adm = axe_use_adapter(input);
++            if (adm == NULL) {
++                LOG("axe_fe: unknown master adapter %d", input);
++                return 0;
++            }
++            adm->old_diseqc = diseqc = 0;
++            diseqc_param = &adm->diseqc_param;
++            hiband = get_lnb_hiband(tp, diseqc_param);
++            freq = get_lnb_int_freq(tp, diseqc_param);
++            if (!axe_tune_check(adm, tp, diseqc_param, 0)) {
++                send_diseqc(adm, adm->fe2, 0, 0, pol, hiband, diseqc_param);
++                adm->old_pol = pol;
++                adm->old_hiband = hiband;
++                adm->old_diseqc = 0;
++            }
++            adm->axe_used |= (1 << ad->id);
++            goto axe;
++        }
++    } else {
++        aid = ad->id & 3;
++        input = ad->master_source < 0 ? 0 : ad->master_source;
++        frontend_fd = ad->fe;
++        ad = axe_use_adapter(input);
++        if (ad == NULL) {
++            LOGM("axe setup: unable to find adapter %d", input);
++            return 0;
++        } else
++            ad->axe_used |= (1 << aid);
++
++        LOG("adapter %d: using source %d, fe %d fe2 %d", ad->id, input, ad->fe,
++            ad->fe2);
++    }
++
++    hiband = get_lnb_hiband(tp, diseqc_param);
++    freq = get_lnb_int_freq(tp, diseqc_param);
++
++    if (diseqc_param->switch_type == SWITCH_UNICABLE) {
++        freq = send_unicable(ad, ad->fe2, freq / 1000, diseqc, pol, hiband,
++                             diseqc_param);
++    } else if (diseqc_param->switch_type == SWITCH_JESS) {
++        freq = send_jess(ad, ad->fe2, freq / 1000, diseqc, pol, hiband,
++                         diseqc_param);
++    } else if (diseqc_param->switch_type == SWITCH_SLAVE) {
++        LOG("FD %d (%d) is a slave adapter", frontend_fd);
++    } else {
++        if (ad->old_pol != pol || ad->old_hiband != hiband ||
++            ad->old_diseqc != diseqc)
++            send_diseqc(ad, frontend_fd, diseqc, ad->old_diseqc != diseqc, pol,
++                        hiband, diseqc_param);
++        else
++            LOGM("Skip sending diseqc commands since "
++                 "the switch position doesn't need to be changed: "
++                 "pol %d, hiband %d, switch position %d",
++                 pol, hiband, diseqc);
++    }
++
++    ad->old_pol = pol;
++    ad->old_hiband = hiband;
++    ad->old_diseqc = diseqc;
++
++axe:
++    for (aid = 0; aid < 4; aid++) {
++        ad2 = get_axe_configured_adapter(aid);
++        if (ad2)
++            LOGM("axe_fe: used[%d] = 0x%x, pol=%d, hiband=%d, diseqc=%d", aid,
++                 ad2->axe_used, ad2->old_pol, ad2->old_hiband, ad2->old_diseqc);
++    }
++    LOGM("axe_fe: reset for fd %d adapter %d input %d diseqc %d", frontend_fd,
++         ad ? ad->pa : -1, input, diseqc);
++    if (axe_fe_reset(frontend_fd) < 0)
++        LOG("axe_fe: RESET failed for fd %d: %s", frontend_fd, strerror(errno));
++    if (axe_fe_input(frontend_fd, input))
++        LOG("axe_fe: INPUT failed for fd %d input %d: %s", frontend_fd, input,
++            strerror(errno));
++
++    return freq;
++}
++
++#define ADD_PROP(c, d)                                                         \
++    {                                                                          \
++        p_cmd[iProp].cmd = (c);                                                \
++        p_cmd[iProp].u.data = (d);                                             \
++        iProp++;                                                               \
++    }
++
++int axe_tune(int aid, transponder *tp) {
++    adapter *ad = get_adapter(aid);
++    ssize_t drv;
++    char buf[1316];
++    char plp_desc[1024];
++
++    int64_t bclear, bpol;
++    int iProp = 0;
++    int fd_frontend;
++
++    int freq = tp->freq.value_or(0);
++    struct dtv_property p_cmd[20];
++    struct dtv_properties p = {.num = 0, .props = p_cmd};
++    struct dvb_frontend_event ev;
++
++    struct dtv_property p_clear[] = {
++        {.cmd = DTV_CLEAR},
++    };
++
++    struct dtv_properties cmdseq_clear = {.num = 1, .props = p_clear};
++
++    if (!ad)
++        return -404;
++
++    fd_frontend = ad->fe;
++
++    axe_set_tuner_led(aid + 1, 1);
++    axe_dmxts_stop(ad->dvr);
++    axe_fe_reset(ad->fe);
++
++    // probably can be removed
++    do {
++        drv = read(ad->dvr, buf, sizeof(buf));
++    } while (drv > 0);
++
++    memset(p_cmd, 0, sizeof(p_cmd));
++    bclear = getTick();
++
++    if ((ioctl(fd_frontend, FE_SET_PROPERTY, &cmdseq_clear)) == -1) {
++        LOG("FE_SET_PROPERTY DTV_CLEAR failed for fd %d: %s", fd_frontend,
++            strerror(errno));
++        //        return -1;
++    }
++
++    switch (tp->sys.value_or(SYS_UNDEFINED)) {
++    case SYS_DVBS:
++    case SYS_DVBS2: {
++        plp_desc[0] = 0;
++        int len = 0;
++
++        bpol = getTick();
++        freq = axe_setup_switch(ad);
++        if (freq < MIN_FRQ_DVBS || freq > MAX_FRQ_DVBS)
++            LOG_AND_RETURN(-404, "Frequency %d is not within range ", freq)
++
++        ADD_PROP(DTV_SYMBOL_RATE, tp->sr.value_or(0))
++        ADD_PROP(DTV_INNER_FEC, tp->fec.value_or(FEC_AUTO))
++        if (tp->plp_isi.has_value()) {
++            ADD_PROP(DTV_STREAM_ID, tp->plp_isi.value() & 0xFF)
++            strcatf(plp_desc, len, "stream_id = %d",
++                    tp->plp_isi.value() & 0xFF);
++        }
++        ADD_PROP(DTV_SCRAMBLING_SEQUENCE_INDEX, pls_scrambling_index(tp))
++        strcatf(plp_desc, len, "sequence_index = %d", pls_scrambling_index(tp));
++
++        LOG("tuning to %d(%d) pol: %s (%d) sr:%d fec:%s delsys:%s mod:%s "
++            "rolloff:%s pilot:%s, ts clear=%jd, ts pol=%jd %s",
++            tp->freq.value_or(0), freq,
++            fe_pol_map.reverse_lookup(tp->pol.value_or(0)).data(),
++            tp->pol.value_or(0), tp->sr.value_or(0),
++            fe_fec_map.reverse_lookup(tp->fec.value_or(FEC_AUTO)).data(),
++            fe_delsys_map.reverse_lookup(tp->sys.value_or(SYS_UNDEFINED))
++                .data(),
++            fe_modulation_map.reverse_lookup(tp->mtype.value_or(QAM_AUTO))
++                .data(),
++            "auto", "auto", bclear, bpol, plp_desc)
++        break;
++    }
++
++    case SYS_DVBT:
++    case SYS_DVBT2:
++
++        if (tp->freq.value_or(0) < MIN_FRQ_DVBT ||
++            tp->freq.value_or(0) > MAX_FRQ_DVBT)
++            LOG_AND_RETURN(-404, "Frequency %d is not within range ",
++                           tp->freq.value_or(0))
++
++        freq = freq * 1000;
++        ADD_PROP(DTV_BANDWIDTH_HZ, tp->bw.value_or(8000000))
++        ADD_PROP(DTV_CODE_RATE_HP, tp->fec.value_or(FEC_AUTO))
++        ADD_PROP(DTV_CODE_RATE_LP, tp->fec.value_or(FEC_AUTO))
++        ADD_PROP(DTV_GUARD_INTERVAL, tp->gi.value_or(GUARD_INTERVAL_AUTO))
++        ADD_PROP(DTV_TRANSMISSION_MODE,
++                 tp->tmode.value_or(TRANSMISSION_MODE_AUTO))
++        ADD_PROP(DTV_HIERARCHY, HIERARCHY_AUTO)
++#if DVBAPIVERSION >= 0x0502
++        if (tp->plp_isi.has_value())
++            ADD_PROP(DTV_STREAM_ID, tp->plp_isi.value() & 0xFF)
++#endif
++
++        LOG("tuning to %d delsys: %s bw:%d inversion:%s mod:%s fec:%s guard:%s "
++            "transmission: %s, ts clear = %jd",
++            freq,
++            fe_delsys_map.reverse_lookup(tp->sys.value_or(SYS_UNDEFINED))
++                .data(),
++            tp->bw.value_or(8000000),
++            fe_inversion_map
++                .reverse_lookup(tp->inversion.value_or(INVERSION_AUTO))
++                .data(),
++            fe_modulation_map.reverse_lookup(tp->mtype.value_or(QAM_AUTO))
++                .data(),
++            fe_fec_map.reverse_lookup(tp->fec.value_or(FEC_AUTO)).data(),
++            fe_gi_map.reverse_lookup(tp->gi.value_or(GUARD_INTERVAL_AUTO))
++                .data(),
++            fe_tmode_map
++                .reverse_lookup(tp->tmode.value_or(TRANSMISSION_MODE_AUTO))
++                .data(),
++            bclear)
++        break;
++
++    case SYS_DVBC2:
++    case SYS_DVBC_ANNEX_A:
++
++        if (tp->freq.value_or(0) < MIN_FRQ_DVBC ||
++            tp->freq.value_or(0) > MAX_FRQ_DVBC)
++            LOG_AND_RETURN(-404, "Frequency %d is not within range ",
++                           tp->freq.value_or(0))
++
++        freq = freq * 1000;
++        ADD_PROP(DTV_SYMBOL_RATE, tp->sr.value_or(0))
++#if DVBAPIVERSION >= 0x0502
++        if (tp->plp_isi.has_value()) {
++            int v = tp->plp_isi.value() & 0xFF;
++            if (tp->ds.has_value())
++                v |= (tp->ds.value() & 0xFF) << 8;
++            ADD_PROP(DTV_STREAM_ID, v);
++        }
++#endif
++        // valid for DD DVB-C2 devices
++
++        LOG("tuning to %d sr:%d specinv:%s delsys:%s mod:%s ts clear = %jd",
++            freq, tp->sr.value_or(0),
++            fe_inversion_map
++                .reverse_lookup(tp->inversion.value_or(INVERSION_AUTO))
++                .data(),
++            fe_delsys_map.reverse_lookup(tp->sys.value_or(SYS_UNDEFINED))
++                .data(),
++            fe_modulation_map.reverse_lookup(tp->mtype.value_or(QAM_AUTO))
++                .data(),
++            bclear)
++        break;
++
++    default:
++        LOG("tuning to unknown delsys: %s freq %d ts clear = %jd",
++            fe_delsys_map.reverse_lookup(tp->sys.value_or(SYS_UNDEFINED))
++                .data(),
++            freq, bclear)
++        break;
++    }
++
++    ADD_PROP(DTV_FREQUENCY, freq)
++    ADD_PROP(DTV_INVERSION, tp->inversion.value_or(INVERSION_AUTO))
++    ADD_PROP(DTV_MODULATION, tp->mtype.value_or(QAM_AUTO));
++    ADD_PROP(DTV_DELIVERY_SYSTEM, tp->sys.value_or(SYS_UNDEFINED));
++    ADD_PROP(DTV_TUNE, 0)
++
++    p.num = iProp;
++    /* discard stale QPSK events */
++    while (1) {
++        if (ioctl(fd_frontend, FE_GET_EVENT, &ev) == -1)
++            break;
++    }
++
++    axe_pls_isi(ad, tp);
++
++    if ((ioctl(fd_frontend, FE_SET_PROPERTY, &p)) == -1)
++        if (ioctl(fd_frontend, FE_SET_PROPERTY, &p) == -1) {
++            LOG("dvb_tune: set property failed %d %s", errno, strerror(errno));
++            axe_set_tuner_led(aid + 1, 0);
++            return -404;
++        }
++
++    axe_dmxts_start(ad->dvr);
++    return 0;
++}
++
++int axe_set_pid(adapter *ad, int i_pid) {
++    if (i_pid > 8192 || ad == NULL)
++        LOG_AND_RETURN(-1, "pid %d > 8192 for ADAPTER %d", i_pid,
++                       ad ? ad->id : -1);
++    if (axe_dmxts_add_pid(ad->dvr, i_pid) < 0) {
++        LOG("failed setting filter on PID %d for ADAPTER %d (%s)", i_pid,
++            ad->id, strerror(errno));
++        return -1;
++    }
++    LOG("setting filter on PID %d for ADAPTER %d", i_pid, ad->id);
++    return ((ad->id + 1) << 16) | i_pid;
++}
++
++int axe_del_filters(adapter *ad, int fd, int pid) {
++    if (a == NULL)
++        return 0; /* closed */
++    if ((fd & 0xffff) != pid)
++        LOG_AND_RETURN(0, "AXE PID remove on an invalid handle %d, pid %d", fd,
++                       pid);
++    if (axe_dmxts_remove_pid(ad->dvr, pid) < 0)
++        LOG("AXE PID remove failed on PID %d ADAPTER %d: %s", pid, ad->pa,
++            strerror(errno))
++    else
++        LOG("clearing filters on PID %d ADAPTER %d", pid, ad->pa);
++    return 0;
++}
++
++fe_delivery_system_t axe_delsys(int aid, int fd, fe_delivery_system_t *sys) {
++    int i;
++    LOG("Delivery System DVB-S/DVB-S2 (AXE)");
++    for (i = 0; i < 10; i++)
++        sys[i] = SYS_UNDEFINED;
++    sys[0] = SYS_DVBS;
++    sys[1] = SYS_DVBS2;
++    return SYS_DVBS2;
++}
++
++int axe_get_signal(adapter *ad) {
++    uint16_t strength = 0, snr = 0, db = 0, tmp;
++    int status = 0;
++    uint32_t ber = 0;
++    get_signal_new(ad, &status, &ber, &strength, &snr, &db);
++
++    strength = strength * 240 / 24000;
++    if (strength > 240)
++        strength = 240;
++    tmp = snr * 255 / 54000;
++    if (tmp > 255)
++        tmp = 255;
++    if (tmp <= 15)
++        tmp = 0;
++    snr = tmp;
++
++    {
++        std::lock_guard<SMutex> lock(ad->mutex);
++        ad->snr = snr;
++        ad->db = db;
++        ad->strength = strength;
++        ad->status = status;
++        ad->ber = ber;
++    }
++
++    if (ad->status == 0 &&
++        ((ad->tp.diseqc_param.switch_type == SWITCH_JESS) ||
++         (ad->tp.diseqc_param.switch_type == SWITCH_UNICABLE))) {
++        axe_setup_switch(ad);
++    }
++    return 0;
++}
++
++int axe_commit(adapter *a) { return 0; }
++
++int axe_close(adapter *a2) {
++    adapter *c;
++    int aid, busy;
++    if (a2->fe <= 0)
++        return 0;
++    a2->fe = -1;
++    if (a2->fe2 > 0) {
++        axe_dmxts_stop(a2->fe2);
++        axe_fe_reset(a2->fe2);
++    }
++    for (aid = busy = 0; aid < 4; aid++) {
++        c = a[aid];
++        c->axe_used &= ~(1 << a2->id);
++        if (c->axe_used || c->fe > 0)
++            busy++;
++    }
++    if (busy > 0 && opts.axe_power > 1)
++        goto nostandby;
++    for (aid = 0; aid < 4; aid++) {
++        c = a[aid];
++        if (opts.axe_power < 2 && c != a2 && busy && c->sock >= 0)
++            continue;
++        if (c->axe_used != 0 || c->sid_cnt > 0) {
++            LOG("AXE standby: adapter %d busy (cnt=%d/used=%04x/fe=%d), "
++                "keeping",
++                aid, c->sid_cnt, c->axe_used, c->fe);
++            continue;
++        }
++        if (c->fe2 < 0)
++            continue;
++        LOG("AXE standby: adapter %d", aid);
++        axe_fe_standby(c->fe2, -1);
++        axe_set_tuner_led(aid + 1, 0);
++        if (ioctl(c->fe2, FE_SET_VOLTAGE, SEC_VOLTAGE_OFF) < 0)
++            LOG("ioctl FE_SET_VOLTAGE for fd %d failed: %d : %s ", c->fe2,
++                errno, strerror(errno));
++
++        close(c->fe2);
++        c->fe2 = -1;
++        c->old_diseqc = c->old_pol = c->old_hiband = -1;
++    }
++nostandby:
++    axe_set_tuner_led(a2->id + 1, 0);
++    return 0;
++}
++
++void find_axe_adapter(adapter **a) {
++    int na = 0;
++    char buf[100];
++    int fd;
++    int i = 0, j = 0;
++    adapter *ad;
++    axe_set_network_led(0);
++    for (i = 0; i < MAX_ADAPTERS; i++)
++        for (j = 0; j < MAX_ADAPTERS; j++) {
++            if (i < 4 && j == 0) {
++                axe_set_tuner_led(i + 1, 0);
++                sprintf(buf, "/dev/axe/frontend-%d", i);
++                fd = open(buf, O_RDONLY | O_NONBLOCK);
++            } else {
++                continue;
++            }
++            LOG("testing device %s -> fd: %d", buf, fd);
++            if (fd >= 0) {
++                if (!a[na])
++                    a[na] = adapter_alloc();
++
++                ad = a[na];
++                ad->pa = i;
++                ad->fn = j;
++
++                ad->open = axe_open_device;
++                ad->set_pid = axe_set_pid;
++                ad->del_filters = axe_del_filters;
++                ad->commit = axe_commit;
++                ad->tune = axe_tune;
++                ad->delsys = axe_delsys;
++                ad->name = axe_name;
++                ad->post_init = axe_post_init;
++                ad->close = axe_close;
++                ad->get_signal = axe_get_signal;
++                ad->wakeup = axe_wakeup;
++                ad->type = ADAPTER_DVB;
++                ad->fast_status = 1;
++                ad->standby = free_axe_input;
++                close(fd);
++                na++;
++                a_count = na; // update adapter counter
++                if (na == MAX_ADAPTERS)
++                    return;
++            } else {
++                if (i < 4) {
++                    LOG("AXE - cannot open %s: %i", buf, errno);
++                    sleep(60);
++                }
++            }
++        }
++    for (; na < MAX_ADAPTERS; na++)
++        if (a[na])
++            a[na]->pa = a[na]->fn = -1;
++}
++
++int free_axe_input(adapter *ad) {
++    int aid;
++    adapter *ad2;
++
++    for (aid = 0; aid < 4; aid++) {
++        ad2 = get_axe_configured_adapter(aid);
++        if (ad2) {
++            ad2->axe_used &= ~(1 << ad->id);
++            LOGM("axe: _free input %d : %04x", ad2->id, ad2->axe_used);
++        }
++    }
++    return 0;
++}
++
++static char *axe_vdevice_read(int aid, char *buf, size_t buflen) {
++    size_t len;
++    int i, fd;
++    if (buflen < 1)
++        return NULL;
++    buf[buflen - 1] = 0;
++    for (i = 0; i < 10; i++) {
++        snprintf(buf, buflen, "/proc/STAPI/stpti/PTI%d/vDeviceInfo", aid ^ 1);
++        fd = open(buf, O_RDONLY);
++        if (fd < 0) {
++            LOG("Could not open %s, error %d: %s", buf, errno, strerror(errno));
++            continue;
++        }
++        len = read(fd, buf, buflen - 1);
++        close(fd);
++        if (len > 200) {
++            buf[len] = '\0';
++            return buf;
++        }
++    }
++    return NULL;
++}
++
++adapter *axe_vdevice_sync(int aid) {
++    adapter *ad = get_adapter_nw(aid);
++    char buf[1024], *p;
++    int64_t t;
++    uint32_t addr, pktc, syncerrc, tperrc, ccerr;
++
++    if (!ad)
++        return NULL;
++    t = getTickUs();
++    if (ad->axe_vdevice_last_sync + 1000000 >= t)
++        return ad;
++    ad->axe_vdevice_last_sync = t;
++    p = axe_vdevice_read(aid, buf, sizeof(buf));
++    if (p)
++        p = strchr(p, '\n');
++    if (p) {
++        if (sscanf(p + 1, "#%08x:  %08x %08x %08x %08x", &addr, &pktc,
++                   &syncerrc, &tperrc, &ccerr) == 5) {
++            ad->axe_pktc = pktc;
++            ad->axe_ccerr = ccerr;
++        }
++    }
++    return ad;
++}
++
++int64_t get_axe_pktc(int aid) {
++    adapter *ad = axe_vdevice_sync(aid);
++    return ad ? ad->axe_pktc : 0;
++}
++
++int64_t get_axe_ccerr(int aid) {
++    adapter *ad = axe_vdevice_sync(aid);
++    return ad ? ad->axe_ccerr : 0;
++}
++
++char *get_axe_coax(int aid, char *dest, int max_size) {
++    int i, len;
++    adapter *ad;
++    dest[0] = 0;
++    len = 0;
++    if (aid < 0 || aid > 3)
++        return dest;
++
++    for (i = 0; i < 4; i++) {
++        ad = get_axe_configured_adapter(i);
++        if (ad && ad->axe_used & (1 << aid))
++            len += snprintf(dest + len, max_size - len, "LNB%d,", i + 1);
++    }
++
++    if (len > 0)
++        dest[len - 1] = 0;
++
++    return dest;
++}
++
++_symbols axe_sym[] = {{"ad_axe_pktc", VAR_FUNCTION_INT64, (void *)&get_axe_pktc,
++                       0, MAX_ADAPTERS, 0},
++                      {"ad_axe_ccerr", VAR_FUNCTION_INT64,
++                       (void *)&get_axe_ccerr, 0, MAX_ADAPTERS, 0},
++                      {"ad_axe_coax", VAR_FUNCTION_STRING,
++                       (void *)&get_axe_coax, 0, MAX_ADAPTERS, 0},
++                      {NULL, 0, NULL, 0, 0, 0}};
++
++#endif // #ifndef DISABLE_LINUXDVB
+diff --git a/src/axe.h b/src/axe.h
+new file mode 100644
+index 0000000..109be82
+--- /dev/null
++++ b/src/axe.h
+@@ -0,0 +1,101 @@
++#ifndef __AXE_H
++#define __AXE_H
++
++#include <linux/dvb/dmx.h>
++#include <linux/dvb/frontend.h>
++#include <sys/ioctl.h>
++
++extern char *fe_inversion[];
++
++typedef struct fe_frontend_status fe_frontend_status_t;
++
++struct fe_frontend_status {
++    __u32 val0;
++    __u32 val1;
++    __u32 val2;
++    __u32 modulation;
++    __u32 val4;
++    __u32 frequency;
++    __u32 val6;
++    __u32 val7;
++    __u32 symbol_rate;
++    __u32 val9;
++    __u32 fec;
++    __u32 rolloff;
++    __u32 val12;
++    __u32 val13;
++} __attribute__((packed));
++
++#define FE_FRONTEND_STANDBY _IOW('o', 91, __u32)
++#define FE_FRONTEND_RESET _IO('o', 93)
++#define FE_FRONTEND_STATUS _IOR('o', 96, fe_frontend_status_t)
++#define FE_FRONTEND_INPUT _IOW('o', 97, __u8)
++
++static inline int axe_fe_standby(int fd, __u32 stdby) {
++    return ioctl(fd, FE_FRONTEND_STANDBY, &stdby);
++}
++
++static inline int axe_fe_reset(int fd) {
++    return ioctl(fd, FE_FRONTEND_RESET, 0x54);
++}
++
++static inline int axe_fe_input(int fd, __u8 in) {
++    return ioctl(fd, FE_FRONTEND_INPUT, &in);
++}
++
++typedef struct dmx_stream_params_s {
++    __u32 srcIp;
++    __u16 srcPort;
++    __u16 dstPort;
++    __u32 dstIp;
++    __u32 ts;   /* timestamp              */
++    __u32 ssrc; /* synchronization source */
++    __u16 seq;
++} dmx_stream_params_t;
++
++typedef struct rtp_state {
++    __u32 ssrc;
++    __u32 ts;
++    __u32 spc;
++    __u32 soc;
++    __u16 seq;
++} rtp_state_t;
++
++#define DMXTS_ADD_PID _IOW('o', 1, __u16)
++#define DMXTS_REMOVE_PID _IOW('o', 2, __u16)
++
++#define DMXTS_TRANSFER_START _IO('o', 5)
++#define DMXTS_TRANSFER_START_RTP _IOW('o', 6, dmx_stream_params_t)
++#define DMXTS_TRANSFER_STOP _IO('o', 7)
++#define DMXTS_RTP_SETUP_SSRC _IOW('o', 8, __u32)
++#define DMXTS_TRANSFER_PAUSE _IO('o', 9)
++#define DMXTS_TRANSFER_RESUME _IO('o', 10)
++
++#define DMXTS_GET_RTP_STREAM_STATE _IOR('o', 11, rtp_state_t)
++
++static inline int axe_dmxts_add_pid(int fd, __u16 pid) {
++    return ioctl(fd, DMXTS_ADD_PID, &pid);
++}
++
++static inline int axe_dmxts_remove_pid(int fd, __u16 pid) {
++    return ioctl(fd, DMXTS_REMOVE_PID, &pid);
++}
++
++static inline int axe_dmxts_start(int fd) {
++    return ioctl(fd, DMXTS_TRANSFER_START);
++}
++
++static inline int axe_dmxts_stop(int fd) {
++    return ioctl(fd, DMXTS_TRANSFER_STOP);
++}
++
++void axe_set_tuner_led(int tuner, int on);
++void axe_set_network_led(int on);
++void axe_status(char *buf, size_t buflen);
++int axe_wakeup(adapter *ad, int fe_fd, int voltage);
++void find_axe_adapter(adapter **a);
++int axe_setup_switch(adapter *ad);
++int free_axe_input(adapter *ad);
++void set_link_adapters(char *o);
++
++#endif
+diff --git a/src/ca.cpp b/src/ca.cpp
+index ea67043..875cf94 100644
+--- a/src/ca.cpp
++++ b/src/ca.cpp
+@@ -3448,7 +3448,6 @@ SCA_op dvbca = {
+ 
+ int ca_reconnect(void *arg) {
+     int i;
+-    extern adapter *a[];
+     for (i = 0; i < MAX_ADAPTERS; i++)
+         if (ca_devices[i] && ca_devices[i]->enabled &&
+             ca_devices[i]->fd == -1) {
+diff --git a/src/compat/charconv b/src/compat/charconv
+new file mode 100644
+index 0000000..6d5c791
+--- /dev/null
++++ b/src/compat/charconv
+@@ -0,0 +1,29 @@
++#pragma once
++
++#include <cerrno>
++#include <cstdlib>
++#include <system_error>
++
++namespace std {
++
++struct from_chars_result {
++    const char *ptr;
++    errc ec;
++};
++
++inline from_chars_result from_chars(const char *first, const char *last,
++                                    int &value) {
++    char *end = NULL;
++    errno = 0;
++    long parsed = strtol(first, &end, 10);
++    if (end == first)
++        return {first, errc::invalid_argument};
++    if (errno == ERANGE)
++        return {end, errc::result_out_of_range};
++    if (end > last)
++        return {last, errc::invalid_argument};
++    value = static_cast<int>(parsed);
++    return {end, errc{}};
++}
++
++} // namespace std
+diff --git a/src/compat/optional b/src/compat/optional
+new file mode 100644
+index 0000000..5c6804a
+--- /dev/null
++++ b/src/compat/optional
+@@ -0,0 +1,165 @@
++#pragma once
++
++#include <stdexcept>
++#include <utility>
++
++namespace std {
++
++struct nullopt_t {
++    explicit nullopt_t(int) {}
++};
++
++static const nullopt_t nullopt(0);
++
++template <typename T> class optional {
++  public:
++    optional() : engaged_(false), value_() {}
++    optional(nullopt_t) : engaged_(false), value_() {}
++    optional(const T &value) : engaged_(true), value_(value) {}
++    optional(T &&value) : engaged_(true), value_(std::move(value)) {}
++
++    optional &operator=(nullopt_t) {
++        engaged_ = false;
++        value_ = T();
++        return *this;
++    }
++
++    optional &operator=(const T &value) {
++        engaged_ = true;
++        value_ = value;
++        return *this;
++    }
++
++    optional &operator=(T &&value) {
++        engaged_ = true;
++        value_ = std::move(value);
++        return *this;
++    }
++
++    bool has_value() const { return engaged_; }
++    explicit operator bool() const { return engaged_; }
++
++    T &value() {
++        if (!engaged_)
++            throw std::runtime_error("bad optional access");
++        return value_;
++    }
++
++    const T &value() const {
++        if (!engaged_)
++            throw std::runtime_error("bad optional access");
++        return value_;
++    }
++
++    template <typename U> T value_or(U default_value) const {
++        return engaged_ ? value_ : static_cast<T>(default_value);
++    }
++
++    void reset() {
++        engaged_ = false;
++        value_ = T();
++    }
++
++    T &operator*() { return value(); }
++    const T &operator*() const { return value(); }
++    T *operator->() { return &value(); }
++    const T *operator->() const { return &value(); }
++
++  private:
++    bool engaged_;
++    T value_;
++};
++
++template <typename T> optional<T> make_optional(T value) {
++    return optional<T>(std::move(value));
++}
++
++template <typename T> bool operator==(const optional<T> &o, nullopt_t) {
++    return !o.has_value();
++}
++
++template <typename T> bool operator==(nullopt_t, const optional<T> &o) {
++    return !o.has_value();
++}
++
++template <typename T> bool operator!=(const optional<T> &o, nullopt_t) {
++    return o.has_value();
++}
++
++template <typename T> bool operator!=(nullopt_t, const optional<T> &o) {
++    return o.has_value();
++}
++
++template <typename T>
++bool operator==(const optional<T> &a, const optional<T> &b) {
++    if (a.has_value() != b.has_value())
++        return false;
++    return !a.has_value() || *a == *b;
++}
++
++template <typename T>
++bool operator!=(const optional<T> &a, const optional<T> &b) {
++    return !(a == b);
++}
++
++template <typename T, typename U>
++bool operator==(const optional<T> &a, const U &b) {
++    return a.has_value() && *a == b;
++}
++
++template <typename T, typename U>
++bool operator==(const U &a, const optional<T> &b) {
++    return b == a;
++}
++
++template <typename T, typename U>
++bool operator!=(const optional<T> &a, const U &b) {
++    return !(a == b);
++}
++
++template <typename T, typename U>
++bool operator!=(const U &a, const optional<T> &b) {
++    return !(a == b);
++}
++
++template <typename T, typename U>
++bool operator<=(const optional<T> &a, const U &b) {
++    return a.has_value() && *a <= b;
++}
++
++template <typename T, typename U>
++bool operator<=(const U &a, const optional<T> &b) {
++    return b.has_value() && a <= *b;
++}
++
++template <typename T, typename U>
++bool operator<(const optional<T> &a, const U &b) {
++    return a.has_value() && *a < b;
++}
++
++template <typename T, typename U>
++bool operator<(const U &a, const optional<T> &b) {
++    return b.has_value() && a < *b;
++}
++
++template <typename T, typename U>
++bool operator>=(const optional<T> &a, const U &b) {
++    return a.has_value() && *a >= b;
++}
++
++template <typename T, typename U>
++bool operator>=(const U &a, const optional<T> &b) {
++    return b.has_value() && a >= *b;
++}
++
++template <typename T, typename U>
++bool operator>(const optional<T> &a, const U &b) {
++    return a.has_value() && *a > b;
++}
++
++template <typename T, typename U>
++bool operator>(const U &a, const optional<T> &b) {
++    return b.has_value() && a > *b;
++}
++
++} // namespace std
+diff --git a/src/compat/ranges b/src/compat/ranges
+new file mode 100644
+index 0000000..e490834
+--- /dev/null
++++ b/src/compat/ranges
+@@ -0,0 +1,20 @@
++#pragma once
++
++#include <algorithm>
++
++namespace std {
++namespace ranges {
++
++template <typename R1, typename R2, typename Pred>
++bool equal(const R1 &a, const R2 &b, Pred pred) {
++    typename R1::const_iterator ia = a.begin();
++    typename R2::const_iterator ib = b.begin();
++    for (; ia != a.end() && ib != b.end(); ++ia, ++ib) {
++        if (!pred(*ia, *ib))
++            return false;
++    }
++    return ia == a.end() && ib == b.end();
++}
++
++} // namespace ranges
++} // namespace std
+diff --git a/src/compat/string_view b/src/compat/string_view
+new file mode 100644
+index 0000000..d57937c
+--- /dev/null
++++ b/src/compat/string_view
+@@ -0,0 +1,127 @@
++#pragma once
++
++#include <cstring>
++#include <string>
++
++namespace std {
++
++class string_view {
++  public:
++    typedef const char *const_iterator;
++    static const size_t npos = static_cast<size_t>(-1);
++
++    string_view() : data_(""), size_(0) {}
++    string_view(const char *s) : data_(s ? s : ""), size_(s ? strlen(s) : 0) {}
++    string_view(const char *s, size_t count) : data_(s ? s : ""), size_(count) {}
++    string_view(const std::string &s) : data_(s.data()), size_(s.size()) {}
++
++    const char *data() const { return data_; }
++    size_t size() const { return size_; }
++    bool empty() const { return size_ == 0; }
++
++    const char &operator[](size_t pos) const { return data_[pos]; }
++    const char &back() const { return data_[size_ - 1]; }
++
++    const_iterator begin() const { return data_; }
++    const_iterator end() const { return data_ + size_; }
++
++    void remove_prefix(size_t n) {
++        if (n > size_)
++            n = size_;
++        data_ += n;
++        size_ -= n;
++    }
++
++    string_view substr(size_t pos, size_t count = npos) const {
++        if (pos > size_)
++            pos = size_;
++        size_t remaining = size_ - pos;
++        if (count == npos || count > remaining)
++            count = remaining;
++        return string_view(data_ + pos, count);
++    }
++
++    size_t find(char c, size_t pos = 0) const {
++        for (size_t i = pos; i < size_; ++i)
++            if (data_[i] == c)
++                return i;
++        return npos;
++    }
++
++    size_t find(string_view needle, size_t pos = 0) const {
++        if (needle.size_ == 0)
++            return pos <= size_ ? pos : npos;
++        if (needle.size_ > size_)
++            return npos;
++        for (size_t i = pos; i + needle.size_ <= size_; ++i)
++            if (memcmp(data_ + i, needle.data_, needle.size_) == 0)
++                return i;
++        return npos;
++    }
++
++    size_t find(const char *needle, size_t pos = 0) const {
++        return find(string_view(needle), pos);
++    }
++
++    bool contains(string_view needle) const { return find(needle) != npos; }
++    bool contains(const char *needle) const { return contains(string_view(needle)); }
++    bool contains(char needle) const { return find(needle) != npos; }
++
++    bool starts_with(string_view prefix) const {
++        return size_ >= prefix.size_ &&
++               memcmp(data_, prefix.data_, prefix.size_) == 0;
++    }
++
++    bool starts_with(const char *prefix) const {
++        return starts_with(string_view(prefix));
++    }
++
++    bool ends_with(string_view suffix) const {
++        return size_ >= suffix.size_ &&
++               memcmp(data_ + size_ - suffix.size_, suffix.data_, suffix.size_) ==
++                   0;
++    }
++
++    bool ends_with(const char *suffix) const {
++        return ends_with(string_view(suffix));
++    }
++
++    bool ends_with(char suffix) const {
++        return size_ > 0 && data_[size_ - 1] == suffix;
++    }
++
++    size_t find_first_not_of(const char *chars, size_t pos = 0) const {
++        for (size_t i = pos; i < size_; ++i) {
++            if (strchr(chars, data_[i]) == NULL)
++                return i;
++        }
++        return npos;
++    }
++
++    std::string str() const { return std::string(data_, size_); }
++    operator std::string() const { return str(); }
++
++  private:
++    const char *data_;
++    size_t size_;
++};
++
++inline bool operator==(string_view a, string_view b) {
++    return a.size() == b.size() && memcmp(a.data(), b.data(), a.size()) == 0;
++}
++
++inline bool operator!=(string_view a, string_view b) { return !(a == b); }
++
++inline bool operator==(string_view a, const char *b) {
++    return a == string_view(b);
++}
++
++inline bool operator!=(string_view a, const char *b) { return !(a == b); }
++
++inline bool operator==(const char *a, string_view b) {
++    return string_view(a) == b;
++}
++
++inline bool operator!=(const char *a, string_view b) { return !(a == b); }
++
++} // namespace std
+diff --git a/src/dvb.cpp b/src/dvb.cpp
+index e7a5e25..081c8c4 100644
+--- a/src/dvb.cpp
++++ b/src/dvb.cpp
+@@ -1298,9 +1298,9 @@ int dvb_tune(int aid, transponder *tp) {
+         ADD_PROP2(
+             DTV_STREAM_ID,
+             tp->plp_isi.has_value()
+-                ? std::optional(tp->plp_isi.value() |
+-                                (tp->pls_code.value_or(0) << 8) |
+-                                (tp->pls_mode.value_or(PLS_MODE_ROOT) << 26))
++                ? std::make_optional(tp->plp_isi.value() |
++                                     (tp->pls_code.value_or(0) << 8) |
++                                     (tp->pls_mode.value_or(PLS_MODE_ROOT) << 26))
+                 : std::optional<int>())
+ #endif
+ #endif
+@@ -1347,7 +1347,7 @@ int dvb_tune(int aid, transponder *tp) {
+         ADD_PROP2(DTV_HIERARCHY, std::make_optional(HIERARCHY_AUTO))
+ #if DVBAPIVERSION >= 0x0502
+         ADD_PROP2(DTV_STREAM_ID, tp->plp_isi.has_value()
+-                                     ? std::optional(tp->plp_isi.value() & 0xFF)
++                                     ? std::make_optional(tp->plp_isi.value() & 0xFF)
+                                      : std::optional<int>())
+ #endif
+ 
+@@ -1404,8 +1404,8 @@ int dvb_tune(int aid, transponder *tp) {
+ #if DVBAPIVERSION >= 0x0502
+         ADD_PROP2(DTV_STREAM_ID,
+                   tp->plp_isi.has_value()
+-                      ? std::optional((tp->plp_isi.value() & 0xFF) |
+-                                      ((tp->ds.value_or(0) & 0xFF) << 8))
++                      ? std::make_optional((tp->plp_isi.value() & 0xFF) |
++                                           ((tp->ds.value_or(0) & 0xFF) << 8))
+                       : std::optional<int>())
+ #endif
+         // valid for DD DVB-C2 devices
+diff --git a/src/dvbapi.cpp b/src/dvbapi.cpp
+index 92723fa..9517809 100644
+--- a/src/dvbapi.cpp
++++ b/src/dvbapi.cpp
+@@ -512,7 +512,6 @@ int dvbapi_timeout(sockets *s) {
+ }
+ 
+ int is_adapter_active() {
+-    extern adapter *a[];
+     int i, active_adapters = 0;
+     for (i = 0; i < MAX_ADAPTERS; i++)
+         if (a[i] && a[i]->enabled) {
+diff --git a/src/minisatip.cpp b/src/minisatip.cpp
+index 4fdc851..6bc911c 100644
+--- a/src/minisatip.cpp
++++ b/src/minisatip.cpp
+@@ -27,6 +27,9 @@
+ #include "socketworks.h"
+ #include "srt.h"
+ #include "stream.h"
++#ifndef DISABLE_AXE
++#include "axe.h"
++#endif
+ 
+ #include "utils/ticks.h"
+ #include "utils/uuid.h"
+@@ -132,6 +135,9 @@ int rtsp, http, si, si1, ssdp1;
+ #define CACHE_DIR_OPT 'z'
+ #define DISABLE_CAT_OPT '5'
+ #define DISABLE_PMT_SCAN '9'
++#define QUATTRO_OPT 'Q'
++#define QUATTRO_HIBAND_OPT '8'
++#define AXE_POWER 'W'
+ // Options that don't have a short option available
+ #define LONG_OPT_ONLY_START 1024
+ #define VERSION_OPT (LONG_OPT_ONLY_START + 1)
+@@ -202,6 +208,11 @@ static const struct option long_options[] = {
+ #ifndef DISABLE_NETCVCLIENT
+     {"netceiver", required_argument, NULL, NETCVCLIENT_OPT},
+ #endif
++#ifndef DISABLE_AXE
++    {"quattro", no_argument, NULL, QUATTRO_OPT},
++    {"quattro-hiband", required_argument, NULL, QUATTRO_HIBAND_OPT},
++    {"power", required_argument, NULL, AXE_POWER},
++#endif
+ #ifndef DISABLE_DVBCA
+     {"ca-pin", required_argument, NULL, CA_PIN_OPT},
+     {"ci", required_argument, NULL, FORCE_CI_OPT},
+@@ -260,6 +271,9 @@ const char *built_info[] = {
+     "Built without srt",
+ #else
+     "Built with srt",
++#endif
++#ifndef DISABLE_AXE
++    "Built for satip-axe",
+ #endif
+     NULL};
+ 
+@@ -542,6 +556,18 @@ Help\n\
+ * -9 --disable-pmt-scan: Disables scanning PMTs and only reads the PMTs that are requested by the client\n\
+ \t* Provides more reliable decrypting for channels included in multiple providers\n\
+ \n"
++#ifndef DISABLE_AXE
++        "\
++* -W --power num: power to all inputs (0 = only active inputs, 1 = all inputs)\n\
++\n\
++* -Q --quattro: quattro LNB config (H/H,H/V,L/H,L/V)\n\
++\n\
++* -8 --quattro-hiband hiband\n\
++\t* if hiband is 0, do not allow hiband\n\
++\t* if hiband is 1, allow hiband\n\
++\n\
++"
++#endif
+ #ifndef DISABLE_DVBCA
+         "\
+ * -3 --ca-pin mapping_string: set the pin for CIs\n\
+@@ -671,6 +697,10 @@ void set_options(int argc, char *argv[]) {
+     opts.max_pids = 0;
+     opts.dvbapi_offset =
+         0; // offset for multiple dvbapi clients to the same server
++#ifndef DISABLE_AXE
++    opts.max_pids = 32;
++    opts.document_root = "/usr/share/minisatip/html";
++#endif
+ 
+     opts.name_app = app_name;
+     char short_opts[200];
+@@ -1059,6 +1089,20 @@ void set_options(int argc, char *argv[]) {
+             opts.pmt_scan = 1 - opts.pmt_scan;
+             break;
+ 
++#ifndef DISABLE_AXE
++        case QUATTRO_OPT:
++            opts.quattro = 1;
++            break;
++
++        case QUATTRO_HIBAND_OPT:
++            opts.quattro_hiband = atoi(optarg) + 1;
++            break;
++
++        case AXE_POWER:
++            opts.axe_power = atoi(optarg) + 1;
++            break;
++
++#endif
+ #ifndef DISABLE_DVBCA
+         case CA_PIN_OPT:
+             set_ca_adapter_pin(optarg);
+@@ -1332,7 +1376,7 @@ int read_rtsp(sockets *s) {
+         }
+ 
+         if (starts_with_case_insensitive(arg[0], "PLAY")) {
+-            std::string url_str(arg[1]);
++            std::string url_str(arg[1].data(), arg[1].size());
+             auto qm_pos = url_str.find('?');
+             if (qm_pos != std::string::npos) {
+                 url_str = url_str.substr(0, qm_pos);
+@@ -2112,8 +2156,14 @@ int has_pmt = 1;
+ #else
+ int has_pmt = 0;
+ #endif
++#ifndef DISABLE_AXE
++int has_axe = 1;
++#else
++int has_axe = 0;
++#endif
+ 
+ _symbols minisatip_sym[] = {
++    {"has_axe", VAR_INT, &has_axe, 1, 0, 0},
+     {"has_pmt", VAR_INT, &has_pmt, 1, 0, 0},
+     {"name_app", VAR_PSTRING, &opts.name_app, 0, 0, 0},
+     {"http_host", VAR_PSTRING, &opts.http_host, 0, 0, 0},
+diff --git a/src/opts.h b/src/opts.h
+index 2190e00..64d78c4 100644
+--- a/src/opts.h
++++ b/src/opts.h
+@@ -52,6 +52,11 @@ typedef struct struct_opts {
+     int use_demux_device;
+     float strength_multiplier, snr_multiplier;
+     char enigma;
++#ifndef DISABLE_AXE
++    int quattro;
++    int quattro_hiband;
++    int axe_power;
++#endif
+ #ifndef DISABLE_SATIPCLIENT
+     char *satip_servers;
+     char *satip_xml;
+diff --git a/src/satipc.cpp b/src/satipc.cpp
+index c8b1c5b..6473b4c 100644
+--- a/src/satipc.cpp
++++ b/src/satipc.cpp
+@@ -625,7 +625,9 @@ static int satipc_open_srt(adapter *ad, satipc *sip) {
+     srt_setsockflag(sip->srt_sock, SRTO_LATENCY, &latency, sizeof(latency));
+     // No SRTO_RENDEZVOUS — caller mode (default)
+     // Blocking mode for sync connect
+-    sip->srt_streamid = std::to_string(get_random_uint32());
++    std::ostringstream stream_id;
++    stream_id << get_random_uint32();
++    sip->srt_streamid = stream_id.str();
+     srt_setsockflag(sip->srt_sock, SRTO_STREAMID, sip->srt_streamid.c_str(),
+                     sip->srt_streamid.size());
+ 
+diff --git a/src/stream.cpp b/src/stream.cpp
+index 2e8f14f..989a97d 100644
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -297,7 +297,7 @@ int start_play(streams *sid, sockets *s) {
+     }
+     bool pids_empty_or_zero =
+         sid->tp.pids.empty() ||
+-        (sid->tp.pids.size() == 1 && sid->tp.pids.contains(0));
++        (sid->tp.pids.size() == 1 && sid->tp.pids.count(0) > 0);
+     if (pids_empty_or_zero)
+         s->flush_enqued_data = 1;
+     sid->do_play = 1;
+diff --git a/src/utils.h b/src/utils.h
+index 74da8b4..5d80000 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -163,8 +163,8 @@ typedef ssize_t (*mywritev)(int fd, const struct iovec *io, int len);
+ const char *loglevels[] = {"general", "http",   "socketworks", "stream",
+                            "adapter", "satipc", "pmt",         "tables",
+                            "dvbapi",  "lock",   "netceiver",   "ca",
+-                           "socket",  "utils",  "dmx",         "ssdp",
+-                           "dvb",     "ddci",   NULL};
++                           "axe",     "socket", "utils",       "dmx",
++                           "ssdp",    "dvb",    "ddci",        NULL};
+ mywritev _writev = writev;
+ #else
+ extern char *loglevels[];
+diff --git a/src/utils/logging/logging.h b/src/utils/logging/logging.h
+index dccc712..d096aad 100644
+--- a/src/utils/logging/logging.h
++++ b/src/utils/logging/logging.h
+@@ -35,6 +35,7 @@ extern __thread int thread_index;
+ #define LOG_LOCK (1 << 9)
+ #define LOG_NETCEIVER (1 << 10)
+ #define LOG_DVBCA (1 << 11)
++#define LOG_AXE (1 << 12)
+ #define LOG_SOCKET (1 << 13)
+ #define LOG_UTILS (1 << 14)
+ #define LOG_DMX (1 << 15)
