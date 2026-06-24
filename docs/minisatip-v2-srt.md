@@ -37,13 +37,20 @@ Ubuntu-based container with an extracted STLinux `/opt/STM` tree mounted into
 the container:
 
 ```sh
-make docker-minisatip-clean STM_DIR=/path/to/stlinux-opt/STM
+make docker-minisatip-clean
 ```
 
-After moving an older checkout aside, this may for example be:
+If `STM_DIR` does not exist yet, the build extracts `/opt/STM` from the legacy
+STLinux Docker image into:
+
+```text
+./stlinux-opt/STM
+```
+
+To reuse an already extracted toolchain, override `STM_DIR`:
 
 ```sh
-make docker-minisatip-clean STM_DIR=/root/satip-axe.ori/stlinux-opt/STM
+make docker-minisatip-clean STM_DIR=/path/to/stlinux-opt/STM
 ```
 
 This builds only SRT and minisatip. The full firmware release build still uses

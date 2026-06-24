@@ -8,6 +8,8 @@ TOOLCHAIN=$(STLINUX)/devkit/sh4
 HOST_ARCH=$(shell uname -m)
 CMAKE ?= $(or $(shell command -v cmake3 2>/dev/null),$(shell command -v cmake 2>/dev/null),cmake)
 STM_DIR ?= $(CURDIR)/stlinux-opt/STM
+STLINUX_IMAGE ?= jalle19/centos7-stlinux24:latest
+STLINUX_COPY_CONTAINER ?= satip-axe-stlinux-copy
 
 EXTRA_AXE_MODULES_DIR=firmware/initramfs/root/modules_idl4k_7108_ST40HOST_LINUX_32BITS
 EXTRA_AXE_MODULES=axe_dmx.ko axe_dmxts.ko axe_fp.ko axe_i2c.ko \
@@ -100,8 +102,7 @@ docker-clean-release:
 	docker run --rm -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) satip-axe-make clean all release
 
 .PHONY: docker-minisatip
-docker-minisatip:
-	test -d "$(STM_DIR)"
+docker-minisatip: $(STM_DIR)/STLinux-2.4
 	docker build -f Dockerfile.minisatip -t satip-axe-minisatip .
 	docker run --rm \
 	  -v $(shell pwd):/build \
@@ -110,14 +111,21 @@ docker-minisatip:
 	  satip-axe-minisatip minisatip
 
 .PHONY: docker-minisatip-clean
-docker-minisatip-clean:
-	test -d "$(STM_DIR)"
+docker-minisatip-clean: $(STM_DIR)/STLinux-2.4
 	docker build -f Dockerfile.minisatip -t satip-axe-minisatip .
 	docker run --rm \
 	  -v $(shell pwd):/build \
 	  -v "$(STM_DIR)":/opt/STM:ro \
 	  --user $(shell id -u):$(shell id -g) \
 	  satip-axe-minisatip minisatip-clean minisatip
+
+$(STM_DIR)/STLinux-2.4:
+	@mkdir -p "$(dir $(STM_DIR))"
+	rm -rf "$(STM_DIR)"
+	-docker rm -f $(STLINUX_COPY_CONTAINER)
+	docker create --name $(STLINUX_COPY_CONTAINER) $(STLINUX_IMAGE)
+	docker cp $(STLINUX_COPY_CONTAINER):/opt/STM "$(dir $(STM_DIR))"
+	docker rm $(STLINUX_COPY_CONTAINER)
 
 #
 # all
