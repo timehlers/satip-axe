@@ -10,7 +10,7 @@ RUN yum -y update && \
   yum -y install wget make gcc git python wget tar \
                  bzip2 uboot-tools patch fakeroot \
                  file autoconf automake libtool \
-                 texinfo
+                 texinfo ca-certificates cmake3
 
 # Required for git operations when container is running as an UID that doesn't exist in /etc/passwd
 ENV GIT_COMMITTER_NAME=nobody

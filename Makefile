@@ -6,7 +6,7 @@ STLINUX=/opt/STM/STLinux-2.4
 TOOLPATH=$(STLINUX)/host/bin
 TOOLCHAIN=$(STLINUX)/devkit/sh4
 HOST_ARCH=$(shell uname -m)
-CMAKE ?= cmake
+CMAKE ?= $(or $(shell command -v cmake3 2>/dev/null),$(shell command -v cmake 2>/dev/null),cmake)
 
 EXTRA_AXE_MODULES_DIR=firmware/initramfs/root/modules_idl4k_7108_ST40HOST_LINUX_32BITS
 EXTRA_AXE_MODULES=axe_dmx.ko axe_dmxts.ko axe_fp.ko axe_i2c.ko \
@@ -90,13 +90,13 @@ endef
 # short-hand for building a releases with Docker
 #
 docker-release:
-	docker pull jalle19/satip-axe-make
-	docker run --rm -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) jalle19/satip-axe-make:latest all release
+	docker build -t satip-axe-make .
+	docker run --rm -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) satip-axe-make all release
 
 docker-clean-release:
-	docker pull jalle19/satip-axe-make
 	git clean -xfd -f
-	docker run --rm -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) jalle19/satip-axe-make:latest clean all release
+	docker build -t satip-axe-make .
+	docker run --rm -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) satip-axe-make clean all release
 
 #
 # all
@@ -305,7 +305,7 @@ apps/sh4-toolchain.cmake:
 	  'set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)' \
 	  > $@
 
-apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4: apps/sh4-toolchain.cmake
+apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4: apps/sh4-toolchain.cmake $(SRT_PATCH)
 	rm -rf apps/$(SRT) apps/$(SRT_BUILD) apps/$(SRT_INSTALL)
 	$(call GIT_CLONE,https://github.com/Haivision/srt.git,$(SRT),$(SRT_COMMIT))
 	cd apps/$(SRT) && git apply ../../$(SRT_PATCH)
@@ -319,7 +319,7 @@ apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4: apps/sh4-toolchain.cmake
 	$(CMAKE) --build apps/$(SRT_BUILD) -j $(CPUS)
 	$(CMAKE) --install apps/$(SRT_BUILD)
 
-apps/minisatip/minisatip: apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4
+apps/minisatip/minisatip: apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4 $(MINISATIP_PATCH)
 	rm -rf apps/minisatip apps/minisatip-build
 	$(call GIT_CLONE,https://github.com/catalinii/minisatip.git,minisatip,$(MINISATIP_COMMIT))
 	cd apps/minisatip && git apply ../../$(MINISATIP_PATCH)
