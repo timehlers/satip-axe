@@ -354,7 +354,7 @@ apps/$(SRT_INSTALL)/lib/libsrt.so.1.4.4: apps/sh4-toolchain.cmake $(SRT_PATCH)
 	rm -rf apps/$(SRT) apps/$(SRT_BUILD) apps/$(SRT_INSTALL)
 	@mkdir -p apps
 	git clone --depth 1 --branch $(SRT_COMMIT) https://github.com/Haivision/srt.git apps/$(SRT)
-	cd apps/$(SRT) && git apply ../../$(SRT_PATCH)
+	cd apps/$(SRT) && patch -p1 < ../../$(SRT_PATCH)
 	$(CMAKE) -S apps/$(SRT) -B apps/$(SRT_BUILD) \
 	  -DCMAKE_TOOLCHAIN_FILE=$(CURDIR)/apps/sh4-toolchain.cmake \
 	  -DCMAKE_BUILD_TYPE=Release \
