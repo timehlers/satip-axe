@@ -94,13 +94,13 @@ endef
 # short-hand for building a releases with Docker
 #
 docker-release:
-	docker build -t satip-axe-make .
-	docker run --rm -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) satip-axe-make all release
+	docker build --network $(DOCKER_NETWORK) -t satip-axe-make .
+	docker run --rm --network $(DOCKER_NETWORK) -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) satip-axe-make all release
 
 docker-clean-release:
 	git clean -xfd -f
-	docker build -t satip-axe-make .
-	docker run --rm -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) satip-axe-make clean all release
+	docker build --network $(DOCKER_NETWORK) -t satip-axe-make .
+	docker run --rm --network $(DOCKER_NETWORK) -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) satip-axe-make clean all release
 
 .PHONY: docker-minisatip
 docker-minisatip: $(STM_DIR)/STLinux-2.4
