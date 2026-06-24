@@ -1,0 +1,24 @@
+diff --git a/srtcore/common.h b/srtcore/common.h
+--- a/srtcore/common.h
++++ b/srtcore/common.h
+@@ -54,6 +54,7 @@
+ 
+ #define _CRT_SECURE_NO_WARNINGS 1 // silences windows complaints for sscanf
+ 
++#include <sstream>
+ #include <memory>
+ #include <cstdlib>
+ #include <cstdio>
+@@ -966,7 +967,11 @@ public:
+         for (size_t i = 0; i < SIZE; ++i)
+         {
+             if ( array[i] )
+-                out += std::to_string(initseq+i) + " ";
++            {
++                std::ostringstream seqstr;
++                seqstr << (initseq + i);
++                out += seqstr.str() + " ";
++            }
+         }
+ 
+         return out;
