@@ -22,6 +22,16 @@ patches/srt-1.4.4-sh4.patch
 
 ## Build
 
+The STLinux SH4 toolchain contains old 32-bit x86 host binaries. The Docker
+host therefore needs IA32 emulation enabled in the kernel. On Linux this can be
+checked with:
+
+```sh
+grep IA32_EMULATION /boot/config-$(uname -r)
+```
+
+`CONFIG_IA32_EMULATION=y` is required.
+
 The `minisatip` make target now performs these steps:
 
 1. generate an SH4 CMake toolchain file in `apps/sh4-toolchain.cmake`
