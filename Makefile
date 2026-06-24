@@ -7,6 +7,7 @@ TOOLPATH=$(STLINUX)/host/bin
 TOOLCHAIN=$(STLINUX)/devkit/sh4
 HOST_ARCH=$(shell uname -m)
 CMAKE ?= $(or $(shell command -v cmake3 2>/dev/null),$(shell command -v cmake 2>/dev/null),cmake)
+STM_DIR ?= $(CURDIR)/stlinux-opt/STM
 
 EXTRA_AXE_MODULES_DIR=firmware/initramfs/root/modules_idl4k_7108_ST40HOST_LINUX_32BITS
 EXTRA_AXE_MODULES=axe_dmx.ko axe_dmxts.ko axe_fp.ko axe_i2c.ko \
@@ -97,6 +98,26 @@ docker-clean-release:
 	git clean -xfd -f
 	docker build -t satip-axe-make .
 	docker run --rm -v $(shell pwd):/build --user $(shell id -u):$(shell id -g) satip-axe-make clean all release
+
+.PHONY: docker-minisatip
+docker-minisatip:
+	test -d "$(STM_DIR)"
+	docker build -f Dockerfile.minisatip -t satip-axe-minisatip .
+	docker run --rm \
+	  -v $(shell pwd):/build \
+	  -v "$(STM_DIR)":/opt/STM:ro \
+	  --user $(shell id -u):$(shell id -g) \
+	  satip-axe-minisatip minisatip
+
+.PHONY: docker-minisatip-clean
+docker-minisatip-clean:
+	test -d "$(STM_DIR)"
+	docker build -f Dockerfile.minisatip -t satip-axe-minisatip .
+	docker run --rm \
+	  -v $(shell pwd):/build \
+	  -v "$(STM_DIR)":/opt/STM:ro \
+	  --user $(shell id -u):$(shell id -g) \
+	  satip-axe-minisatip minisatip-clean minisatip
 
 #
 # all

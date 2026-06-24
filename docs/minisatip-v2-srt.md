@@ -32,6 +32,23 @@ grep IA32_EMULATION /boot/config-$(uname -r)
 
 `CONFIG_IA32_EMULATION=y` is required.
 
+For minisatip/SRT development, the preferred reproducible test path is an
+Ubuntu-based container with an extracted STLinux `/opt/STM` tree mounted into
+the container:
+
+```sh
+make docker-minisatip-clean STM_DIR=/path/to/stlinux-opt/STM
+```
+
+After moving an older checkout aside, this may for example be:
+
+```sh
+make docker-minisatip-clean STM_DIR=/root/satip-axe.ori/stlinux-opt/STM
+```
+
+This builds only SRT and minisatip. The full firmware release build still uses
+the legacy STLinux/CentOS release environment.
+
 The `minisatip` make target now performs these steps:
 
 1. generate an SH4 CMake toolchain file in `apps/sh4-toolchain.cmake`
