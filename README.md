@@ -10,8 +10,8 @@ Releases can be found [here](https://github.com/Jalle19/satip-axe/releases).
 
 ## Improvements in this fork
 
-* Uses upstream minisatip without any custom patches
-* DVB-CSA support in minisatip (due to CPU limitations only 1-2 streams can be decoded simultaneously)
+* Uses minisatip v2 with a maintained AXE compatibility patch
+* SRT support in minisatip
 * Uses newer version of OScam
 * Reworked build system for easier development
 * Leaner firmware image (obsolete versions of minisatip, tvheadend and Python have been removed)
@@ -27,6 +27,10 @@ make docker-clean-release
 ```
 
 The release build will be in the `out/` directory.
+
+The minisatip v2/SRT build needs CMake in addition to the old STLinux SH4
+toolchain. See [docs/minisatip-v2-srt.md](./docs/minisatip-v2-srt.md) for
+details about the patched minisatip and SRT build.
 
 ## Flashing new firmware
 

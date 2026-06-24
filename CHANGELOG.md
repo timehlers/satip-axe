@@ -2,6 +2,13 @@
 
 This change log will be updated whenever a new official release is made
 
+## Unreleased
+
+* Build `minisatip` from the v2 codebase with an AXE compatibility patch
+* Add SRT support through SH4-built SRT 1.4.4
+* Include `libsrt.so.1.4` and `libatomic.so.1` in the firmware image
+* Disable minisatip DVB-CSA/DVBCA in the tested v2 build
+
 ## Build 27 (Dec 21 2025)
 
 * Bump `minisatip` to v1.3.57, the latest 1.3.x version which is the last 
