@@ -1,13 +1,16 @@
 diff --git a/srtcore/common.h b/srtcore/common.h
 --- a/srtcore/common.h
 +++ b/srtcore/common.h
-@@ -54,6 +54,7 @@
+@@ -54,8 +54,9 @@
  
  #define _CRT_SECURE_NO_WARNINGS 1 // silences windows complaints for sscanf
 +#include <sstream>
  #include <memory>
  #include <cstdlib>
  #include <cstdio>
+ #ifndef _WIN32
+    #include <sys/time.h>
+    #include <sys/uio.h>
 @@ -966,7 +967,11 @@ public:
          for (size_t i = 0; i < SIZE; ++i)
          {

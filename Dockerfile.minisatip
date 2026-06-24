@@ -9,6 +9,7 @@ RUN apt-get update && \
         g++ \
         gcc \
         git \
+        libc6-i386 \
         make \
         patch \
         pkg-config \
