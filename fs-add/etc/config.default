@@ -66,3 +66,9 @@ CROND="yes"
 # oscamd
 #
 OSCAMD="yes"
+
+#
+# custom daemon/service/setup executed from sysinit
+# If unset, /etc/sysconfig/localboot is used for compatibility.
+#
+#CUSTOMD="/etc/sysconfig/customd"
